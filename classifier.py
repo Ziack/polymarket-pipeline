@@ -18,35 +18,32 @@ log = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-CLASSIFICATION_PROMPT = """You are a news classifier for prediction markets.
+CLASSIFICATION_PROMPT = """You are a prediction market analyst. Evaluate this news against the market question.
 
 ## Market Question
 {question}
 
 ## Current Market Price
-YES: {yes_price:.2f} (implied probability: {yes_price:.0%})
+YES: {yes_price:.0%} implied probability
 
 ## Breaking News
 {headline}
 Source: {source}
 
 ## Task
-Does this news make the market question MORE likely to resolve YES, MORE likely to resolve NO, or is it NOT RELEVANT?
+1. Direction: does this make YES more likely ("bullish"), less likely ("bearish"), or is it irrelevant ("neutral")?
+2. Materiality: how strongly does this move the needle? (0.0 = no impact, 1.0 = definitive resolution)
+3. Probability: given this news, what probability (0.0–1.0) would you assign to YES resolving?
 
-Also rate the MATERIALITY — how much should this move the price? 0.0 means no impact, 1.0 means this is definitive evidence.
-
-Respond with ONLY valid JSON:
-{{
-  "direction": "bullish" | "bearish" | "neutral",
-  "materiality": <float 0.0 to 1.0>,
-  "reasoning": "<1 sentence>"
-}}"""
+Respond ONLY with valid JSON — no markdown, no explanation outside the JSON:
+{{"direction":"bullish"|"bearish"|"neutral","materiality":<0.0-1.0>,"probability":<0.0-1.0>,"reasoning":"<1 sentence>"}}"""
 
 
 @dataclass
 class Classification:
-    direction: str  # "bullish", "bearish", "neutral"
+    direction: str      # "bullish", "bearish", "neutral"
     materiality: float  # 0.0-1.0
+    probability: float  # direct probability estimate for YES, 0.0-1.0
     reasoning: str
     latency_ms: int
     model: str
@@ -66,13 +63,13 @@ def classify(headline: str, market: Market, source: str = "unknown") -> Classifi
     try:
         response = client.messages.create(
             model=config.CLASSIFICATION_MODEL,
-            max_tokens=200,
+            max_tokens=256,
             temperature=0.1,
             messages=[{"role": "user", "content": prompt}],
         )
         text = response.content[0].text.strip()
 
-        # Extract JSON
+        # Strip markdown code fences if present
         if "```" in text:
             text = text.split("```")[1]
             if text.startswith("json"):
@@ -87,10 +84,17 @@ def classify(headline: str, market: Market, source: str = "unknown") -> Classifi
             direction = "neutral"
 
         materiality = max(0.0, min(1.0, float(result.get("materiality", 0))))
+        probability = max(0.0, min(1.0, float(result.get("probability", market.yes_price))))
+
+        log.debug(
+            f"[classifier] {direction} mat:{materiality:.2f} prob:{probability:.0%} "
+            f"(market:{market.yes_price:.0%}) — {result.get('reasoning', '')[:60]}"
+        )
 
         return Classification(
             direction=direction,
             materiality=materiality,
+            probability=probability,
             reasoning=result.get("reasoning", ""),
             latency_ms=latency,
             model=config.CLASSIFICATION_MODEL,
@@ -102,6 +106,7 @@ def classify(headline: str, market: Market, source: str = "unknown") -> Classifi
         return Classification(
             direction="neutral",
             materiality=0.0,
+            probability=market.yes_price,
             reasoning=f"Classification error: {type(e).__name__}",
             latency_ms=latency,
             model=config.CLASSIFICATION_MODEL,

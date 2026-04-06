@@ -1,11 +1,12 @@
 """
 Real-time news monitor — event-driven architecture.
-Sources: Twitter API v2 filtered stream, Telegram channels, RSS fallback.
+Sources: Twitter API v2 filtered stream, Telegram channels (Telethon), RSS fallback.
 Emits NewsEvent objects into an asyncio queue as breaking news arrives.
 """
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import logging
 from datetime import datetime, timezone, timedelta
@@ -149,60 +150,89 @@ class TwitterStream:
 
 
 class TelegramMonitor:
-    """Monitor Telegram channels via Bot API long polling."""
+    """Monitor Telegram channels via Telethon user account.
+    Reads any public channel without needing admin or bot membership.
+    """
 
-    def __init__(self, bot_token: str, channel_ids: list[str]):
-        self.bot_token = bot_token
+    # Price alert pattern — skip messages that are purely price data
+    _PRICE_ALERT_RE = re.compile(r"^[\$€£¥]?\d[\d,\.]+\s*[A-Z]{2,5}\b")
+
+    def __init__(self, api_id: int, api_hash: str, channel_ids: list[str]):
+        self.api_id = api_id
+        self.api_hash = api_hash
         self.channel_ids = channel_ids
-        self.enabled = bool(bot_token) and bool(channel_ids)
-        self.last_update_id = 0
+        self.enabled = bool(api_id) and bool(api_hash) and bool(channel_ids)
+        self._session_path = "telegram_session"
 
     async def stream(self, queue: asyncio.Queue):
-        """Poll for new messages and emit NewsEvents."""
+        """Connect via Telethon and emit NewsEvents for every new channel message."""
         if not self.enabled:
-            log.info("[telegram] No bot token or channels — monitor disabled")
+            log.info("[telegram] No API credentials or channels — monitor disabled")
             return
 
-        base_url = f"https://api.telegram.org/bot{self.bot_token}"
+        try:
+            from telethon import TelegramClient, events as tg_events
+        except ImportError:
+            log.warning("[telegram] telethon not installed — run: pip install telethon")
+            return
 
+        # Accept both numeric IDs (-100XXXXXXX) and @usernames
+        channel_entities: list = []
+        for cid in self.channel_ids:
+            cid = cid.strip()
+            if not cid:
+                continue
+            try:
+                channel_entities.append(int(cid))
+            except ValueError:
+                channel_entities.append(cid.lstrip("@"))
+
+        backoff = 5
         while True:
             try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(
-                        f"{base_url}/getUpdates",
-                        params={"offset": self.last_update_id + 1, "timeout": 30},
-                        timeout=35,
-                    )
-                    data = resp.json()
+                client = TelegramClient(self._session_path, self.api_id, self.api_hash)
+                await client.start()
 
-                for update in data.get("result", []):
-                    self.last_update_id = update["update_id"]
-                    msg = update.get("channel_post") or update.get("message", {})
-                    text = msg.get("text", "")
-                    chat_id = str(msg.get("chat", {}).get("id", ""))
+                @client.on(tg_events.NewMessage(chats=channel_entities))
+                async def handler(event):
+                    text = (event.message.message or "").strip()
 
-                    if not text or (self.channel_ids and chat_id not in self.channel_ids):
-                        continue
+                    # Noise filters
+                    if len(text) < 25:
+                        return
+                    if self._PRICE_ALERT_RE.match(text[:40]):
+                        return
+                    # Skip pure forwards with no caption
+                    if event.message.fwd_from is not None and not text:
+                        return
 
                     now = datetime.now(timezone.utc)
-                    msg_date = msg.get("date", 0)
-                    pub = datetime.fromtimestamp(msg_date, tz=timezone.utc) if msg_date else now
+                    msg_date = event.message.date
+                    if msg_date is not None and msg_date.tzinfo is None:
+                        msg_date = msg_date.replace(tzinfo=timezone.utc)
+                    pub = msg_date or now
                     latency = int((now - pub).total_seconds() * 1000)
 
-                    event = NewsEvent(
+                    news_event = NewsEvent(
                         headline=text[:500],
                         source="telegram",
                         url="",
                         received_at=now,
                         published_at=pub,
                         latency_ms=latency,
-                        raw_data=update,
+                        raw_data={"chat_id": str(event.chat_id)},
                     )
-                    await queue.put(event)
+                    await queue.put(news_event)
+                    log.debug(f"[telegram] ({latency}ms) {text[:80]}")
+
+                log.info(f"[telegram] Connected — monitoring {len(channel_entities)} channels")
+                backoff = 5
+                await client.run_until_disconnected()
 
             except Exception as e:
-                log.warning(f"[telegram] Error: {e}")
-                await asyncio.sleep(5)
+                log.warning(f"[telegram] Error: {e}, reconnecting in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 120)
 
 
 class RSSFallback:
@@ -264,7 +294,11 @@ class NewsAggregator:
         self._seen: set[str] = set()
 
         self.twitter = TwitterStream(config.TWITTER_BEARER_TOKEN, config.TWITTER_KEYWORDS)
-        self.telegram = TelegramMonitor(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHANNEL_IDS)
+        self.telegram = TelegramMonitor(
+            config.TELEGRAM_API_ID,
+            config.TELEGRAM_API_HASH,
+            config.TELEGRAM_CHANNEL_IDS,
+        )
         self.rss = RSSFallback(interval_seconds=120)
 
         self.stats = {"twitter": 0, "telegram": 0, "rss": 0, "total": 0, "deduped": 0}

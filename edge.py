@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import config
 from markets import Market
 from classifier import Classification
 from news_stream import NewsEvent
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -67,38 +70,67 @@ def detect_edge_v2(
     news_event: NewsEvent,
 ) -> Signal | None:
     """
-    V2: Use classification direction + materiality instead of probability estimation.
+    V2: Use classification direction + probability/materiality for edge detection.
+    Uses direct probability estimate when available; falls back to materiality-based calc.
     Only generates a signal when:
     - Direction is bullish or bearish (not neutral)
-    - Materiality exceeds threshold
-    - Market price has room to move in the predicted direction
+    - Materiality meets threshold
+    - Computed edge exceeds EDGE_THRESHOLD
+    - Market price has room to move in predicted direction
     """
+    market_q = f'"{market.question[:50]}"'
+
     if classification.direction == "neutral":
+        log.debug(f"[edge] SKIP neutral — {market_q}")
         return None
 
     if classification.materiality < config.MATERIALITY_THRESHOLD:
+        log.debug(
+            f"[edge] SKIP low materiality {classification.materiality:.2f} "
+            f"< {config.MATERIALITY_THRESHOLD} — {market_q}"
+        )
         return None
 
     market_price = market.yes_price
 
     if classification.direction == "bullish":
         side = "YES"
-        # Don't buy YES on markets already priced high
         if market_price > 0.85:
+            log.debug(f"[edge] SKIP already-high YES price {market_price:.0%} — {market_q}")
             return None
-        edge = classification.materiality * (1.0 - market_price)
+        # Use direct probability estimate when it differs meaningfully from market
+        prob = classification.probability
+        if abs(prob - market_price) > 0.02:
+            edge = prob - market_price
+        else:
+            edge = classification.materiality * (1.0 - market_price)
     else:  # bearish
         side = "NO"
-        # Don't buy NO on markets already priced low
         if market_price < 0.15:
+            log.debug(f"[edge] SKIP already-low YES price {market_price:.0%} — {market_q}")
             return None
-        edge = classification.materiality * market_price
+        prob = classification.probability
+        if abs(prob - market_price) > 0.02:
+            edge = market_price - prob
+        else:
+            edge = classification.materiality * market_price
 
     if edge < config.EDGE_THRESHOLD:
+        log.debug(
+            f"[edge] SKIP edge {edge:.1%} < {config.EDGE_THRESHOLD:.0%} "
+            f"({side} mat:{classification.materiality:.2f} prob:{classification.probability:.0%} "
+            f"mkt:{market_price:.0%}) — {market_q}"
+        )
         return None
 
     bet_amount = size_position(edge)
     total_latency = news_event.latency_ms + classification.latency_ms
+
+    log.info(
+        f"[edge] SIGNAL {side} edge:{edge:.1%} mat:{classification.materiality:.2f} "
+        f"prob:{classification.probability:.0%} mkt:{market_price:.0%} "
+        f"bet:${bet_amount} — {market_q}"
+    )
 
     return Signal(
         market=market,
