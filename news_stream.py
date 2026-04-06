@@ -199,7 +199,11 @@ class TelegramMonitor:
         while True:
             try:
                 client = TelegramClient(self._session_path, self.api_id, self.api_hash)
-                await client.start()
+                await client.connect()
+
+                if not await client.is_user_authorized():
+                    log.warning("[telegram] Session not authorized — run: python cli.py auth-telegram")
+                    return
 
                 @client.on(tg_events.NewMessage(chats=channel_entities))
                 async def handler(event):
@@ -210,7 +214,6 @@ class TelegramMonitor:
                         return
                     if self._PRICE_ALERT_RE.match(text[:40]):
                         return
-                    # Skip pure forwards with no caption
                     if event.message.fwd_from is not None and not text:
                         return
 
@@ -231,9 +234,9 @@ class TelegramMonitor:
                         raw_data={"chat_id": str(event.chat_id)},
                     )
                     await queue.put(news_event)
-                    log.debug(f"[telegram] ({latency}ms) {text[:80]}")
+                    log.info(f"[telegram] ({latency}ms) {text[:80]}")
 
-                log.info(f"[telegram] Connected — monitoring {len(channel_entities)} channels")
+                log.info(f"[telegram] Connected as {(await client.get_me()).first_name} — monitoring {len(channel_entities)} channels: {', '.join(str(c) for c in channel_entities)}")
                 backoff = 5
                 await client.run_until_disconnected()
 
