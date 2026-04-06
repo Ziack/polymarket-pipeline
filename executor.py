@@ -29,16 +29,23 @@ def _execute_live(signal: Signal) -> dict:
     """Place a real order via Polymarket CLOB client."""
     try:
         from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds
+        import logging
+        log = logging.getLogger(__name__)
 
+        creds = ApiCreds(
+            api_key=config.POLYMARKET_API_KEY,
+            api_secret=config.POLYMARKET_API_SECRET,
+            api_passphrase=config.POLYMARKET_API_PASSPHRASE,
+        )
         client = ClobClient(
             host=config.POLYMARKET_HOST,
-            key=config.POLYMARKET_API_KEY,
+            key=config.POLYMARKET_PRIVATE_KEY,
             chain_id=137,
-            funder=config.POLYMARKET_PRIVATE_KEY,
+            creds=creds,
+            signature_type=0,
         )
 
-        client.set_api_creds(client.create_or_derive_api_creds())
 
         token_id = get_token_id(signal.market, signal.side)
         if not token_id:
@@ -62,6 +69,8 @@ def _execute_live(signal: Signal) -> dict:
     except ImportError:
         return _log_and_return(signal, status="error_no_clob_client", order_id=None)
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"[executor] Trade failed: {type(e).__name__}: {e}")
         return _log_and_return(signal, status=f"error_{type(e).__name__}", order_id=None)
 
 
