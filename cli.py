@@ -386,6 +386,66 @@ def cmd_auth_telegram(args):
     asyncio.run(_auth())
 
 
+def cmd_join_telegram(args):
+    """Join all Telegram channels in TELEGRAM_CHANNEL_IDS so events flow."""
+    import asyncio
+    import config
+    from rich.panel import Panel
+
+    if not config.TELEGRAM_CHANNEL_IDS:
+        console.print("[red]TELEGRAM_CHANNEL_IDS not set in .env[/red]")
+        sys.exit(1)
+
+    console.print(Panel(
+        "[bold]Joining Telegram channels[/bold]\n\n"
+        "Your account will subscribe to every channel in TELEGRAM_CHANNEL_IDS.\n"
+        "This is required for Telethon to receive live messages.",
+        style="bright_cyan",
+    ))
+
+    async def _join():
+        from telethon import TelegramClient
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.errors import FloodWaitError
+
+        client = TelegramClient("telegram_session", config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
+        await client.start()
+
+        joined = 0
+        already = 0
+        failed = 0
+
+        for raw_id in config.TELEGRAM_CHANNEL_IDS:
+            raw_id = raw_id.strip()
+            if not raw_id:
+                continue
+            try:
+                entity = await client.get_entity(int(raw_id))
+                await client(JoinChannelRequest(entity))
+                console.print(f"  [bright_green]✓[/bright_green] Joined {getattr(entity, 'title', raw_id)}")
+                joined += 1
+                await asyncio.sleep(1.5)   # avoid Telegram rate limits
+            except FloodWaitError as e:
+                console.print(f"  [yellow]Rate limited — waiting {e.seconds}s[/yellow]")
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                err = str(e)
+                if "already" in err.lower() or "USER_ALREADY" in err:
+                    already += 1
+                else:
+                    console.print(f"  [dim]✗ {raw_id}: {err[:60]}[/dim]")
+                    failed += 1
+
+        await client.disconnect()
+        console.print(
+            f"\n[bright_green]Done.[/bright_green] "
+            f"Joined: {joined}  Already member: {already}  Failed: {failed}\n"
+            f"Now run:  python cli.py watch"
+        )
+
+    asyncio.run(_join())
+
+
 def cmd_stats(args):
     import logger
 
@@ -475,6 +535,10 @@ def main():
     # auth-telegram
     p_auth = sub.add_parser("auth-telegram", help="One-time Telegram login (run before watch)")
     p_auth.set_defaults(func=cmd_auth_telegram)
+
+    # join-telegram
+    p_join = sub.add_parser("join-telegram", help="Join all channels in TELEGRAM_CHANNEL_IDS")
+    p_join.set_defaults(func=cmd_join_telegram)
 
     args = parser.parse_args()
     if not args.command:
