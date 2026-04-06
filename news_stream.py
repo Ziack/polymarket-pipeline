@@ -187,6 +187,14 @@ class TelegramMonitor:
             except ValueError:
                 channel_entities.append(cid.lstrip("@"))
 
+        import os
+        session_file = f"{self._session_path}.session"
+        if not os.path.exists(session_file):
+            log.warning(
+                "[telegram] No session file found — run 'python cli.py auth-telegram' once to log in"
+            )
+            return
+
         backoff = 5
         while True:
             try:

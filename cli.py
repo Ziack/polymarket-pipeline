@@ -351,6 +351,41 @@ def cmd_trades(args):
     console.print(table)
 
 
+def cmd_auth_telegram(args):
+    """One-time interactive Telegram auth — creates telegram_session.session."""
+    import asyncio
+    import config
+    from rich.panel import Panel
+
+    if not config.TELEGRAM_API_ID or not config.TELEGRAM_API_HASH:
+        console.print("[red]TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env[/red]")
+        sys.exit(1)
+
+    console.print(Panel(
+        "[bold]Telegram Authentication[/bold]\n\n"
+        "You'll be prompted for your phone number and the SMS/app code.\n"
+        "This only needs to run once — the session is saved locally.",
+        style="bright_cyan",
+    ))
+
+    async def _auth():
+        try:
+            from telethon import TelegramClient
+        except ImportError:
+            console.print("[red]telethon not installed — run: pip install telethon[/red]")
+            sys.exit(1)
+
+        client = TelegramClient("telegram_session", config.TELEGRAM_API_ID, config.TELEGRAM_API_HASH)
+        await client.start()
+        me = await client.get_me()
+        console.print(f"\n[bright_green]Authenticated as:[/bright_green] {me.first_name} (@{me.username})")
+        console.print("[bright_green]Session saved to telegram_session.session[/bright_green]")
+        console.print("\nYou can now run:  python cli.py watch")
+        await client.disconnect()
+
+    asyncio.run(_auth())
+
+
 def cmd_stats(args):
     import logger
 
@@ -436,6 +471,10 @@ def main():
     # stats
     p_stats = sub.add_parser("stats", help="Performance statistics")
     p_stats.set_defaults(func=cmd_stats)
+
+    # auth-telegram
+    p_auth = sub.add_parser("auth-telegram", help="One-time Telegram login (run before watch)")
+    p_auth.set_defaults(func=cmd_auth_telegram)
 
     args = parser.parse_args()
     if not args.command:
