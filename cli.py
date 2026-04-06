@@ -210,11 +210,11 @@ def cmd_verify(args):
         console.print(f"  [dim]SKIP[/dim]  Twitter API (optional — enables real-time news stream)")
 
     # 7. Telegram (optional)
-    has_telegram = bool(config.TELEGRAM_BOT_TOKEN)
+    has_telegram = bool(config.TELEGRAM_API_ID) and bool(config.TELEGRAM_API_HASH)
     if has_telegram:
-        console.print(f"  [bright_green]PASS[/bright_green]  Telegram bot token set")
+        console.print(f"  [bright_green]PASS[/bright_green]  Telegram API credentials set (Telethon)")
     else:
-        console.print(f"  [dim]SKIP[/dim]  Telegram bot (optional — enables channel monitoring)")
+        console.print(f"  [dim]SKIP[/dim]  Telegram API credentials (optional — enables channel monitoring)")
 
     # 8. Polymarket API
     try:
