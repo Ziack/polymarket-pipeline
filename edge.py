@@ -93,6 +93,11 @@ def detect_edge_v2(
 
     market_price = market.yes_price
 
+    # Skip markets where either side is outside CLOB tradeable range (0.001–0.999)
+    if market_price < 0.001 or market_price > 0.999:
+        log.debug(f"[edge] SKIP market effectively resolved ({market_price:.4f}) — {market_q}")
+        return None
+
     if classification.direction == "bullish":
         side = "YES"
         if market_price > 0.85:
